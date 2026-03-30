@@ -78,7 +78,7 @@ ggplot(plot_data, aes(x = priors_group, y = recid_rate)) +
 ```
 
 1.5:
-Unsurprisingly, we find an essentially linear positive relationship between the number of prior offenses and the recidivism rate. This makes intuitive sense. Someone who has committed more offenses in the past is more likely to do so in the future and face legal consequences as a result (i.e. recidivism)
+Unsurprisingly, I find an essentially linear positive relationship between the number of prior offenses and the recidivism rate. This makes intuitive sense. Someone who has committed more offenses in the past is more likely to do so in the future and face legal consequences as a result (i.e. recidivism)
 
 ```{r}
 compas <- read.csv("data/raw/compas_clean.csv")
@@ -104,8 +104,6 @@ summary(ols_main)
 (a) At the 5% level, the predictors age, female, priors_count, felony, has_juv_misd, and age_25_45 are statistically significant.
 (b) Holding all covariates constant, a one-unit increase in priors_count is associated with a 0.03 increase in the predicted probability of recidivism, or about 3 percentage points.
 
-train_pred <- predict(ols_main, newdata = train)
-rmse_train <- sqrt(mean((train$recidivism - train_pred)^2))
 
 ```{r}
 train_pred <- predict(ols_main, newdata = train)
@@ -120,7 +118,7 @@ rmse_test - rmse_train
 ```
 
 2.3
-We find a very small gap in RMSE between the training data (0.4606) and the test data (0.4622) of approximately 0.0016. Since this difference is so small, it suggests our model isn't overfitting the data and that using 16 predictors on a dataset of this size is fine.
+I find a very small gap in RMSE between the training data (0.4606) and the test data (0.4622) of approximately 0.0016. Since this difference is so small, it suggests my model isn't overfitting the data and that using 16 predictors on a dataset of this size is fine.
 
 ```{r}
 set.seed(51)
@@ -141,3 +139,127 @@ for (k in 1:5) {
 rmse_cv
 mean(rmse_cv)
 ```
+
+2.4
+a) I find a 5-fold cross-validated RMSE estimate of 0.4620. This value is slightly less than the out-of-sample estimate of 0.4622 that I calculated earlier. Still, these values are nearly identical.
+b) Cross-validation is basically an extension of the train-test split premise, but instead of only relying on the outcome of one random split -- which is prone to biases created by random chance -- it averages the outcomes of several splits. This smooths out those biases and random occurences while preserving the predictive value.
+c) Lambda is used to optimize for low variance at the cost of a slight bias. The idea is to penalize coefficients in order to maximize predictive value, which cross-validation can evaluate. In other words, cross-validation is the process by which the optimal value of lambda is found.
+
+```{r}
+f_full <- recidivism ~ (.)^2 +
+  I(age^2) + I(priors_count^2) +
+  I(juv_fel_count^2) + I(juv_misd_count^2) +
+  I(juv_other_count^2)
+
+X_train <- model.matrix(f_full, data = train)[, -1]
+X_test  <- model.matrix(f_full, data = test)[, -1]
+
+y_train <- train$recidivism
+y_test  <- test$recidivism
+
+ncol(X_train)
+nrow(train) / ncol(X_train)
+```
+
+3.1
+a) The expanded model uses 141 predictors.
+b) The ratio of trainig observations (5771) to predictors (141) is approximately 40.93.
+
+```{r}
+ols_full <- lm(f_full, data = train)
+
+train_pred_full <- predict(ols_full, newdata = train)
+rmse_train_full <- sqrt(mean((train$recidivism - train_pred_full)^2))
+
+test_pred_full <- predict(ols_full, newdata = test)
+rmse_test_full <- sqrt(mean((test$recidivism - test_pred_full)^2))
+
+rmse_gap_full <- rmse_test_full - rmse_train_full
+
+rmse_train_full
+rmse_test_full
+rmse_gap_full
+```
+3.2
+a) The in-sample RMSE is 0.45.
+b) The out-sample RMSE is 0.49
+c) The difference between the in- and out-sample RMSE for the 141-predictor model is 0.04, which is significantly larger (around 40 times larger in fact) than the difference for the 16-predictor model (0.0016). This makes sense. As we learned with overfitting, using too many variables risks creating a model that sacrifices predictive value in order to conform to preexisting data. This includes noise and outliers that shouldn't be given much weight. Out-sample RMSE measures this effect: when it is noticeably larger than in-sample RMSE (as is the case with the 141-variable model), it implies overfitting.
+
+3.3
+Expanding the set of interaction terms to 180 makes the model much more flexible so that it can accomodate to more of the training data (of which there are nearly 6,000). The inevitable downside of doing so is that this new model essentially contorts itself around existing data (including noise and outliers) so that it is basically unusable for generating predictions about new data. This is the overfitting phenomenon.
+
+```{r}
+set.seed(51)
+cv_ridge <- cv.glmnet(X_train, y_train, alpha = 0, nfolds = 10)
+
+cv_ridge$lambda.min
+plot(cv_ridge)
+```
+
+
+4.1
+a) The optimal lambda value (lambda_min) is 0.014.
+b)The plot shows cross-validated prediction error for different values of the ridge penalty lambda. The error decreases as the penalty becomes smaller, and the optimal value lambda.min is the one that minimizes this error. 
+
+```{r}
+ridge_pred_test <- predict(cv_ridge, newx = X_test, s = "lambda.min")
+
+rmse_ridge <- sqrt(mean((y_test - ridge_pred_test)^2))
+
+rmse_ridge
+```
+
+4.2
+The out-of-sample RMSE for Ridge is 0.470. Compared to the out-of-sample RMSE's for the simple 16-variable model (0.462) and the overfitted 141-variable model (0.489), the Ridge model hovers between the two. In other words, the 16-variable model still outperforms the Ridge model and has the best tradeoff between bias and variance.
+
+```{r}
+ridge_coef <- coef(cv_ridge, s = "lambda.min")
+ridge_coef
+sum(ridge_coef == 0)
+```
+
+4.3
+While there are 13 variables which show values of 0, implying that they've been eliminated, these are mostly just impossible interaction variables like black:hispanic. Some interactions involving very rare groups, such as asian:juv_fel_count and asian:has_juv_felony, may be zero because there are no observations in that subgroup with positive juvenile felony history. Considering the training data sample is around 6,000, it's entirely possible that this specific interaction isn't present. Ridge doesn't outright eliminate variables here, which is consistent with how it is intended to function.
+
+```{r}
+set.seed(51)
+cv_lasso <- cv.glmnet(X_train, y_train, alpha = 1, nfolds = 10)
+
+cv_lasso$lambda.min
+plot(cv_lasso)
+```
+
+5.1
+a) The optimal lambda value is 0.0077.
+b) See above
+
+```{r}
+lasso_coef <- coef(cv_lasso, s = "lambda.min")
+lasso_mat <- as.matrix(lasso_coef)
+
+sum(lasso_mat != 0)
+
+sum(lasso_mat[-1, ] != 0)
+
+ncol(X_train) - sum(lasso_mat[-1, ] != 0)
+
+rownames(lasso_mat)[lasso_mat[,1] != 0]
+```
+
+5.2
+a) 27 of the 141 predictors survived LASSO's selection process (we don't count the intercept). The remaining 114 predictors were eliminated.
+b) A few of the surviving interaction terms are black:juv_fel_count, age:female, priors_count:age_under_25, and other_race:priors_count. These make sense, because it's very reasonable to assume that the effects of race, gender, age, and prior junivile history on recidivism are dependent on one another to meaningful extents.
+c) This supports Baker’s argument because LASSO reduces subjective discretion by starting with a large set of possible predictors and interactions, including those which ight seem irrelevant or implausable, then using a data-driven penalty to select which ones remain. Instead of hand-picking interactions based on personal judgment alone, LASSO applies a consistent rule tied to predictive performance. 
+
+```{r}
+lasso_pred_test <- predict(cv_lasso, newx = X_test, s = "lambda.min")
+
+rmse_lasso <- sqrt(mean((y_test - lasso_pred_test)^2))
+
+rmse_lasso
+```
+
+5.3
+The out-of-sample RMSE for Lasso is 0.459. Compared to the out-of-sample RMSE's for the simple 16-variable model (0.462), the overfitted 141-variable model (0.489), and Ridge (0.470), the LASSO model earns the lowest score indicating its predictive strength. This makes sense, since it very precisely eliminated a majority of the variables while only leaving those (27) which had substantial predictive value.
+
+
